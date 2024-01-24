@@ -157,8 +157,15 @@ LOCAL_SHARED_LIBRARIES := \
     libhardware \
     libhidlbase \
     libui \
-    libexynosgraphicbuffer \
     libion_exynos
+
+ifneq ($(BOARD_USES_EXYNOS_GRALLOC_VERSION), 0)
+LOCAL_SHARED_LIBRARIES += \
+    libexynosgraphicbuffer
+else
+LOCAL_SHARED_LIBRARIES += \
+    android.hardware.graphics.mapper@2.0
+endif
 
 ifeq ($(BOARD_OMX_USES_EPIC), true)
 LOCAL_SHARED_LIBRARIES += \
@@ -193,6 +200,7 @@ endif
 ifeq ($(BOARD_USES_EXYNOS_GRALLOC_VERSION), 0)
 LOCAL_CFLAGS += -DGRALLOC_VERSION0
 LOCAL_CFLAGS += -DUSE_PRIV_FORMAT
+LOCAL_HEADER_LIBRARIES := libgralloc_headers_exynos
 else
 LOCAL_CFLAGS += -DUSE_PRIV_USAGE
 endif
@@ -207,7 +215,7 @@ LOCAL_CFLAGS += -DUSE_KHRONOS_OMX_HEADER
 LOCAL_C_INCLUDES += $(EXYNOS_OMX_INC)/khronos
 else
 ifeq ($(BOARD_USE_ANDROID), true)
-LOCAL_HEADER_LIBRARIES := media_plugin_headers
+LOCAL_HEADER_LIBRARIES += media_plugin_headers
 LOCAL_CFLAGS += -DUSE_ANDROID
 endif
 endif

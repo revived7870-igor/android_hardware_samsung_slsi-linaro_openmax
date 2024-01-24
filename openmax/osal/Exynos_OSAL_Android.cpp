@@ -41,7 +41,12 @@
 #include <memory>
 
 #include "csc.h"
+#ifndef GRALLOC_VERSION0
 #include "ExynosGraphicBuffer.h"
+#else
+#include <android/hardware/graphics/mapper/2.0/IMapper.h>
+#include "gralloc_priv.h"
+#endif
 #include <hardware/exynos/ion.h>
 
 #include "Exynos_OSAL_Mutex.h"
@@ -66,6 +71,7 @@
 
 using namespace android;
 
+#ifndef GRALLOC_VERSION0
 using namespace ::vendor::graphics;
 using namespace ::vendor::graphics::ion;
 
@@ -76,6 +82,21 @@ using namespace ::vendor::graphics::ion;
 #define OMX_GRALLOC_USAGE_UVA ((uint64_t)(BufferUsage::CPU_READ_OFTEN | BufferUsage::CPU_WRITE_OFTEN))
 #define OMX_GRALLOC_USAGE_LOCK (OMX_GRALLOC_USAGE_UVA | OMX_GRALLOC_USAGE_HW_VIDEO)
 #define OMX_GRALLOC_USAGE_PROTECTED ((uint64_t)BufferUsage::PROTECTED)
+#else
+using hardware::graphics::mapper::V2_0::Error;
+using hardware::graphics::mapper::V2_0::IMapper;
+using hardware::graphics::mapper::V2_0::YCbCrLayout;
+
+typedef gralloc_module_t GRALLOC_MODULE;
+
+#define OMX_GRALLOC_USAGE_HW_VIDEO (GRALLOC_USAGE_HW_VIDEO_ENCODER)
+#define OMX_GRALLOC_USAGE_HW_VIDEO_ENC (GRALLOC_USAGE_HW_VIDEO_ENCODER)
+#define OMX_GRALLOC_USAGE_DISP (GRALLOC_USAGE_HW_TEXTURE | GRALLOC_USAGE_EXTERNAL_DISP)
+#define OMX_GRALLOC_USAGE_EXT_AREA (GRALLOC_USAGE_PROTECTED_DPB)
+#define OMX_GRALLOC_USAGE_UVA (GRALLOC_USAGE_SW_READ_OFTEN | GRALLOC_USAGE_SW_WRITE_OFTEN)
+#define OMX_GRALLOC_USAGE_LOCK (OMX_GRALLOC_USAGE_UVA | OMX_GRALLOC_USAGE_HW_VIDEO)
+#define OMX_GRALLOC_USAGE_PROTECTED (GRALLOC_USAGE_PROTECTED)
+#endif
 
 #ifdef __cplusplus
 extern "C" {
@@ -99,6 +120,9 @@ typedef struct _EXYNOS_OMX_SHARED_BUFFER {
 
 typedef struct _EXYNOS_OMX_REF_HANDLE {
     OMX_HANDLETYPE           hMutex;
+#ifdef GRALLOC_VERSION0
+    OMX_PTR                  pGrallocModule;
+#endif
     EXYNOS_OMX_SHARED_BUFFER SharedBuffer[MAX_BUFFER_REF];
 } EXYNOS_OMX_REF_HANDLE;
 
@@ -112,10 +136,18 @@ typedef struct _PERFORMANCE_HANDLE {
 static int lockCnt = 0;
 
 #ifndef USE_WA_ION_BUF_REF
+#ifndef GRALLOC_VERSION0
 static int getIonFd()
 {
     return get_ion_fd(); //gralloc4/libexynosgraphicbuffer/ion_helper.cpp
 }
+#else
+static int getIonFd(GRALLOC_MODULE const *module)
+{
+    private_module_t* m = const_cast<private_module_t*>(reinterpret_cast<const private_module_t*>(module));
+    return m->ionfd;
+}
+#endif
 #endif
 
 static OMX_ERRORTYPE setBufferProcessTypeForDecoder(EXYNOS_OMX_BASEPORT *pExynosPort)
@@ -192,11 +224,17 @@ static OMX_COLOR_FORMATTYPE getBufferFormat(OMX_IN OMX_PTR handle)
     FunctionIn();
 
     OMX_COLOR_FORMATTYPE ret = OMX_COLOR_FormatUnused;
+#ifndef GRALLOC_VERSION0
     ExynosGraphicBufferMeta graphicBuffer((buffer_handle_t)handle);
 
     ret = Exynos_OSAL_HAL2OMXColorFormat(graphicBuffer.format);
     Exynos_OSAL_Log(EXYNOS_LOG_TRACE, "[%s] HAL(0x%x), OMX(0x%x)", __FUNCTION__, graphicBuffer.format, ret);
+#else
+    private_handle_t *priv_hnd = (private_handle_t *) handle;
 
+    ret = Exynos_OSAL_HAL2OMXColorFormat(priv_hnd->format);
+    Exynos_OSAL_Log(EXYNOS_LOG_TRACE, "[%s] HAL(0x%x), OMX(0x%x)", __FUNCTION__, priv_hnd->format, ret);
+#endif
 EXIT:
     FunctionOut();
 
@@ -852,6 +890,7 @@ EXIT:
     return;
 }
 
+#ifndef GRALLOC_VERSION0
 void Exynos_OSAL_UpdateDataspaceToGraphicMeta(OMX_PTR pBuf, int nDataSpace) {
     VideoGrallocMetadata *pMetaData = (VideoGrallocMetadata *)pBuf;
 
@@ -873,6 +912,7 @@ void Exynos_OSAL_UpdateDataspaceToGraphicMeta(OMX_PTR pBuf, int nDataSpace) {
 EXIT:
     return;
 }
+#endif
 
 void Exynos_OSAL_ColorSpaceToColorAspects(
         int                            colorSpace,
@@ -1028,9 +1068,16 @@ static OMX_ERRORTYPE lockBuffer(
     buffer_handle_t          bufferHandle  = (buffer_handle_t)handle;
     hardware::hidl_handle    acquireFenceHandle;
 
+#ifndef GRALLOC_VERSION0
     static ExynosGraphicBufferMapper &mapper(ExynosGraphicBufferMapper::get());
     ExynosGraphicBufferMeta graphicBuffer(bufferHandle);
     Rect bounds(width, height);
+#else
+    private_handle_t   *priv_hnd        = (private_handle_t *)bufferHandle;
+    auto                    buffer = const_cast<native_handle_t *>(bufferHandle);
+    static sp<IMapper>      mapper = IMapper::getService();
+    IMapper::Rect           bounds;
+#endif
 
     if ((handle == NULL) ||
         (pStride == NULL) ||
@@ -1040,10 +1087,28 @@ static OMX_ERRORTYPE lockBuffer(
         goto EXIT;
     }
 
+#ifndef GRALLOC_VERSION0
     Exynos_OSAL_Log(EXYNOS_LOG_TRACE, "[%s] handle: 0x%x, format = %x", __FUNCTION__, handle, graphicBuffer.format);
 
     if (format == OMX_COLOR_FormatAndroidOpaque)
         format = getBufferFormat(handle);
+#else
+    if ((mapper == NULL) || (mapper->isRemote())) {
+        Exynos_OSAL_Log(EXYNOS_LOG_ERROR, "[%s] mapper is not valid", __FUNCTION__);
+        ret = OMX_ErrorUndefined;
+        goto EXIT;
+    }
+
+    Exynos_OSAL_Log(EXYNOS_LOG_TRACE, "[%s] handle: 0x%x, format = %x", __FUNCTION__, handle, priv_hnd->format);
+
+    if (format == OMX_COLOR_FormatAndroidOpaque)
+        format = getBufferFormat(priv_hnd);
+
+    bounds.left     = 0;
+    bounds.top      = 0;
+    bounds.width    = width;
+    bounds.height   = height;
+#endif
 
     switch ((int)format) {
     case OMX_COLOR_Format32BitRGBA8888:
@@ -1052,9 +1117,22 @@ static OMX_ERRORTYPE lockBuffer(
     {
         void *vaddr = NULL;
 
+#ifndef GRALLOC_VERSION0
         auto err = mapper.lock64(bufferHandle, OMX_GRALLOC_USAGE_LOCK, bounds, &vaddr);
 
         if (err != ::android::NO_ERROR) {
+#else
+        auto err = mapper->lock(buffer, OMX_GRALLOC_USAGE_LOCK, bounds, acquireFenceHandle,
+                        [&](const auto& tmpError, const auto& tmpData)
+                        {
+                            if (tmpError != Error::NONE)
+                                return -1;
+
+                            vaddr = tmpData;
+                            return 0;
+                        });
+        if (!err.isOk()) {
+#endif
             Exynos_OSAL_Log(EXYNOS_LOG_ERROR, "[%s] Failed to mapper.lock()", __FUNCTION__);
             ret = OMX_ErrorUndefined;
             goto EXIT;
@@ -1062,17 +1140,37 @@ static OMX_ERRORTYPE lockBuffer(
 
         pBufferInfo->addr[0] = vaddr;
         pBufferInfo->addr[1] = NULL;
+#ifdef GRALLOC_VERSION0
+        pBufferInfo->addr[2] = NULL;
+#endif
     }
         break;
     case OMX_SEC_COLOR_FormatNV21Linear:
     case OMX_SEC_COLOR_FormatYVU420Planar:
     {
+#ifndef GRALLOC_VERSION0
         android_ycbcr outLayout;
+#else
+        YCbCrLayout outLayout;
+#endif
         Exynos_OSAL_Memset(&outLayout, 0, sizeof(outLayout));
 
+#ifndef GRALLOC_VERSION0
         auto err = mapper.lockYCbCr64(bufferHandle, OMX_GRALLOC_USAGE_LOCK, bounds, &outLayout);
 
         if (err != ::android::NO_ERROR) {
+#else
+        auto err = mapper->lockYCbCr(buffer, OMX_GRALLOC_USAGE_LOCK, bounds, acquireFenceHandle,
+                        [&](const auto& tmpError, const auto& tmpLayout)
+                        {
+                            if (tmpError != Error::NONE)
+                                return -1;
+
+                            outLayout = tmpLayout;
+                            return 0;
+                        });
+        if (!err.isOk()) {
+#endif
             Exynos_OSAL_Log(EXYNOS_LOG_ERROR, "[%s] Failed to mapper.lock()", __FUNCTION__);
             ret = OMX_ErrorUndefined;
             goto EXIT;
@@ -1080,16 +1178,36 @@ static OMX_ERRORTYPE lockBuffer(
 
         pBufferInfo->addr[0] = outLayout.y;
         pBufferInfo->addr[1] = outLayout.cr;
+#ifdef GRALLOC_VERSION0
+        pBufferInfo->addr[2] = outLayout.cb;
+#endif
     }
         break;
     default:
     {
+#ifndef GRALLOC_VERSION0
         android_ycbcr outLayout;
+#else
+        YCbCrLayout outLayout;
+#endif
         Exynos_OSAL_Memset(&outLayout, 0, sizeof(outLayout));
 
+#ifndef GRALLOC_VERSION0
         auto err = mapper.lockYCbCr64(bufferHandle, OMX_GRALLOC_USAGE_LOCK, bounds, &outLayout);
 
         if (err != ::android::NO_ERROR) {
+#else
+        auto err = mapper->lockYCbCr(buffer, OMX_GRALLOC_USAGE_LOCK, bounds, acquireFenceHandle,
+                        [&](const auto& tmpError, const auto& tmpLayout)
+                        {
+                            if (tmpError != Error::NONE)
+                                return -1;
+
+                            outLayout = tmpLayout;
+                            return 0;
+                        });
+        if (!err.isOk()) {
+#endif
             Exynos_OSAL_Log(EXYNOS_LOG_ERROR, "[%s] Failed to mapper.lock()", __FUNCTION__);
             ret = OMX_ErrorUndefined;
             goto EXIT;
@@ -1097,35 +1215,57 @@ static OMX_ERRORTYPE lockBuffer(
 
         pBufferInfo->addr[0] = outLayout.y;
         pBufferInfo->addr[1] = outLayout.cb;
+#ifdef GRALLOC_VERSION0
+        pBufferInfo->addr[2] = outLayout.cr;
+#endif
     }
         break;
     }
 
+#ifndef GRALLOC_VERSION0
     pBufferInfo->addr[2] = graphicBuffer.get_video_metadata(bufferHandle);
+#endif
 
     lockCnt++;
     Exynos_OSAL_Log(EXYNOS_LOG_TRACE, "[%s] lockCnt:%d", __FUNCTION__, lockCnt);
 
+#ifndef GRALLOC_VERSION0
     pBufferInfo->fd[0] = graphicBuffer.fd;
     pBufferInfo->fd[1] = graphicBuffer.fd1;
     pBufferInfo->fd[2] = graphicBuffer.fd2;
 
-#ifndef GRALLOC_VERSION0
     if ((graphicBuffer.producer_usage & OMX_GRALLOC_USAGE_PROTECTED) ||
         (graphicBuffer.consumer_usage & OMX_GRALLOC_USAGE_PROTECTED))
 #else
+    pBufferInfo->fd[0] = priv_hnd->fd;
+    pBufferInfo->fd[1] = priv_hnd->fd1;
+    pBufferInfo->fd[2] = priv_hnd->fd2;
+
     if (priv_hnd->flags & OMX_GRALLOC_USAGE_PROTECTED)
 #endif
     {
+#ifndef GRALLOC_VERSION0
         /* in case of DRM,  VAs of ycbcr are invalid */
         pBufferInfo->addr[0] = INT_TO_PTR(graphicBuffer.fd);
         pBufferInfo->addr[1] = INT_TO_PTR(graphicBuffer.fd1);
 
         if ((pBufferInfo->addr[2] == NULL) && (graphicBuffer.fd2 > 0)) /* except for private data buffer */
             pBufferInfo->addr[2] = INT_TO_PTR(graphicBuffer.fd2);
+#else
+        /* in case of DRM,  VAs of ycbcr are invalid */
+        pBufferInfo->addr[0] = INT_TO_PTR(priv_hnd->fd);
+        pBufferInfo->addr[1] = INT_TO_PTR(priv_hnd->fd1);
+
+        if ((pBufferInfo->addr[2] == NULL) && (priv_hnd->fd2 > 0)) /* except for private data buffer */
+            pBufferInfo->addr[2] = INT_TO_PTR(priv_hnd->fd2);
+#endif
     }
 
+#ifndef GRALLOC_VERSION0
     *pStride = (OMX_U32)graphicBuffer.stride;
+#else
+    *pStride = (OMX_U32)priv_hnd->stride;
+#endif
 
     Exynos_OSAL_Log(EXYNOS_LOG_TRACE, "[%s] buffer locked: handle(%p), FD(%u, %u, %u)",
                                         __FUNCTION__, handle, pBufferInfo->fd[0], pBufferInfo->fd[1], pBufferInfo->fd[2]);
@@ -1143,6 +1283,7 @@ static OMX_ERRORTYPE unlockBuffer(OMX_IN OMX_PTR handle)
     OMX_ERRORTYPE   ret             = OMX_ErrorNone;
     buffer_handle_t bufferHandle    = (buffer_handle_t) handle;
 
+#ifndef GRALLOC_VERSION0
     auto buffer = const_cast<native_handle_t *>(bufferHandle);
     int  releaseFence = -1;
 
@@ -1153,12 +1294,44 @@ static OMX_ERRORTYPE unlockBuffer(OMX_IN OMX_PTR handle)
         ret = OMX_ErrorUndefined;
         goto EXIT;
     }
+#else
+    auto                buffer = const_cast<native_handle_t *>(bufferHandle);
+    static sp<IMapper>  mapper = IMapper::getService();
+    int                 releaseFence = -1;
 
+    if ((mapper == NULL) || (mapper->isRemote())) {
+        Exynos_OSAL_Log(EXYNOS_LOG_ERROR, "[%s] mapper is not valid", __FUNCTION__);
+        ret = OMX_ErrorUndefined;
+        goto EXIT;
+    }
+#endif
     Exynos_OSAL_Log(EXYNOS_LOG_TRACE, "[%s] handle: 0x%x", __FUNCTION__, handle);
 
     {
+#ifndef GRALLOC_VERSION0
         auto err = mapper.unlock(bufferHandle);
         if (err != ::android::NO_ERROR) {
+#else
+        auto err = mapper->unlock(buffer,
+                            [&](const auto& tmpError, const auto& tmpReleaseFence)
+                            {
+                                if (tmpError != Error::NONE)
+                                    return -1;
+
+                                auto fenceHandle = tmpReleaseFence.getNativeHandle();
+                                if (fenceHandle && (fenceHandle->numFds == 1)) {
+                                    int fd = dup(fenceHandle->data[0]);
+                                    if (fd >= 0) {
+                                        releaseFence = fd;
+//                                    } else {
+//                                        sync_wait(fenceHandle->data[0], -1);
+                                    }
+                                }
+
+                                return 0;
+                            });
+        if (!err.isOk()) {
+#endif
             Exynos_OSAL_Log(EXYNOS_LOG_ERROR, "[%s] Failed to mapper.lock()", __FUNCTION__);
             ret = OMX_ErrorUndefined;
             goto EXIT;
@@ -1255,7 +1428,9 @@ OMX_HANDLETYPE Exynos_OSAL_RefCount_Create()
 {
     OMX_ERRORTYPE            ret    = OMX_ErrorNone;
     EXYNOS_OMX_REF_HANDLE   *phREF  = NULL;
-
+#ifdef GRALLOC_VERSION0
+    GRALLOC_MODULE          *module = NULL;
+#endif
     int i = 0;
 
     FunctionIn();
@@ -1267,6 +1442,16 @@ OMX_HANDLETYPE Exynos_OSAL_RefCount_Create()
     }
 
     Exynos_OSAL_Memset(phREF, 0, sizeof(EXYNOS_OMX_REF_HANDLE));
+
+#ifdef GRALLOC_VERSION0
+    if (hw_get_module(GRALLOC_HARDWARE_MODULE_ID, (const hw_module_t **)&module) != 0) {
+        Exynos_OSAL_Log(EXYNOS_LOG_ERROR, "[%s] Failed to hw_get_module(GRALLOC_HARDWARE_MODULE_ID)", __FUNCTION__);
+        ret = OMX_ErrorUndefined;
+        goto EXIT;
+    }
+
+    phREF->pGrallocModule = (OMX_PTR)module;
+#endif
 
     ret = Exynos_OSAL_MutexCreate(&phREF->hMutex);
     if (ret != OMX_ErrorNone) {
@@ -1285,7 +1470,9 @@ OMX_ERRORTYPE Exynos_OSAL_RefCount_Reset(OMX_HANDLETYPE hREF)
 {
     OMX_ERRORTYPE            ret    = OMX_ErrorNone;
     EXYNOS_OMX_REF_HANDLE   *phREF  = (EXYNOS_OMX_REF_HANDLE *)hREF;
-
+#ifdef GRALLOC_VERSION0
+    GRALLOC_MODULE          *module = NULL;
+#endif
     int i = 0;
 
     FunctionIn();
@@ -1295,6 +1482,10 @@ OMX_ERRORTYPE Exynos_OSAL_RefCount_Reset(OMX_HANDLETYPE hREF)
         ret = OMX_ErrorBadParameter;
         goto EXIT;
     }
+
+#ifdef GRALLOC_VERSION0
+    module = (GRALLOC_MODULE *)phREF->pGrallocModule;
+#endif
 
     Exynos_OSAL_MutexLock(phREF->hMutex);
 
@@ -1331,6 +1522,7 @@ OMX_ERRORTYPE Exynos_OSAL_RefCount_Reset(OMX_HANDLETYPE hREF)
     for (i = 0; i < MAX_BUFFER_REF; i++) {
         if (phREF->SharedBuffer[i].bufferFd > 0) {
             while (phREF->SharedBuffer[i].cnt > 0) {
+#ifndef GRALLOC_VERSION0
                 if (phREF->SharedBuffer[i].ionHandle != -1)
                     exynos_ion_free_handle(getIonFd(), phREF->SharedBuffer[i].ionHandle);
 
@@ -1339,7 +1531,16 @@ OMX_ERRORTYPE Exynos_OSAL_RefCount_Reset(OMX_HANDLETYPE hREF)
 
                 if (phREF->SharedBuffer[i].ionHandle2 != -1)
                     exynos_ion_free_handle(getIonFd(), phREF->SharedBuffer[i].ionHandle2);
+#else
+                if (phREF->SharedBuffer[i].ionHandle != -1)
+                    exynos_ion_free_handle(getIonFd(module), phREF->SharedBuffer[i].ionHandle);
 
+                if (phREF->SharedBuffer[i].ionHandle1 != -1)
+                    exynos_ion_free_handle(getIonFd(module), phREF->SharedBuffer[i].ionHandle1);
+
+                if (phREF->SharedBuffer[i].ionHandle2 != -1)
+                    exynos_ion_free_handle(getIonFd(module), phREF->SharedBuffer[i].ionHandle2);
+#endif
                 phREF->SharedBuffer[i].cnt--;
 
                 Exynos_OSAL_Log(EXYNOS_LOG_TRACE, "[%s] SharedBuffer[%d] : fd:%llu cnt:%d", __FUNCTION__,
@@ -1384,6 +1585,10 @@ OMX_ERRORTYPE Exynos_OSAL_RefCount_Terminate(OMX_HANDLETYPE hREF)
 
     Exynos_OSAL_RefCount_Reset(phREF);
 
+#ifdef GRALLOC_VERSION0
+    phREF->pGrallocModule = NULL;
+#endif
+
     ret = Exynos_OSAL_MutexTerminate(phREF->hMutex);
     if (ret != OMX_ErrorNone)
         goto EXIT;
@@ -1408,7 +1613,12 @@ OMX_ERRORTYPE Exynos_OSAL_RefCount_Increase(
 
     buffer_handle_t          bufferHandle  = NULL;
 
+#ifndef GRALLOC_VERSION0
     ExynosGraphicBufferMeta graphicBuffer(bufferHandle);
+#else
+    private_handle_t    *priv_hnd       = NULL;
+    GRALLOC_MODULE      *module         = NULL;
+#endif
 
     ion_user_handle_t ionHandle  = -1;
     ion_user_handle_t ionHandle1 = -1;
@@ -1427,6 +1637,9 @@ OMX_ERRORTYPE Exynos_OSAL_RefCount_Increase(
 
     if (pExynosPort->eMetaDataType == METADATA_TYPE_GRAPHIC_HANDLE) {
         bufferHandle = (buffer_handle_t)pBuffer;
+#ifdef GRALLOC_VERSION0
+        priv_hnd     = (private_handle_t *)bufferHandle;
+#endif
     } else {
         EXYNOS_OMX_MULTIPLANE_BUFFER bufferInfo;
 
@@ -1438,16 +1651,31 @@ OMX_ERRORTYPE Exynos_OSAL_RefCount_Increase(
         }
 
         bufferHandle = (buffer_handle_t)bufferInfo.addr[0];
+#ifdef GRALLOC_VERSION0
+        priv_hnd     = (private_handle_t *)bufferHandle;
+#endif
     }
 
+#ifndef GRALLOC_VERSION0
     eColorFormat = Exynos_OSAL_HAL2OMXColorFormat(graphicBuffer.format);
+#else
+    eColorFormat = Exynos_OSAL_HAL2OMXColorFormat(priv_hnd->format);
+#endif
     if (eColorFormat == OMX_COLOR_FormatUnused) {
+#ifndef GRALLOC_VERSION0
         Exynos_OSAL_Log(EXYNOS_LOG_ERROR, "[%s] HAL format(0x%x) is invalid", __FUNCTION__, graphicBuffer.format);
+#else
+        Exynos_OSAL_Log(EXYNOS_LOG_ERROR, "[%s] HAL format(0x%x) is invalid", __FUNCTION__, priv_hnd->format);
+#endif
         ret = OMX_ErrorUndefined;
         goto EXIT;
     }
 
     nPlaneCnt = Exynos_OSAL_GetPlaneCount(eColorFormat, pExynosPort->ePlaneType);
+
+#ifdef GRALLOC_VERSION0
+    module = (GRALLOC_MODULE *)phREF->pGrallocModule;
+#endif
 
     Exynos_OSAL_MutexLock(phREF->hMutex);
 
@@ -1462,6 +1690,7 @@ OMX_ERRORTYPE Exynos_OSAL_RefCount_Increase(
         }
     }
 
+#ifndef GRALLOC_VERSION0
     if ((graphicBuffer.fd > 0) &&
         (nPlaneCnt >= 1)) {
         ionHandle = dup(graphicBuffer.fd);
@@ -1488,14 +1717,48 @@ OMX_ERRORTYPE Exynos_OSAL_RefCount_Increase(
             ionHandle2 = -1;
         }
     }
+#else
+    if ((priv_hnd->fd > 0) &&
+        (nPlaneCnt >= 1)) {
+        ionHandle = dup(priv_hnd->fd);
+        if (ionHandle < 0) {
+            Exynos_OSAL_Log(EXYNOS_LOG_ERROR, "[%s] Failed to dup(fd:%d)", __FUNCTION__, priv_hnd->fd);
+            ionHandle = -1;
+        }
+    }
+
+    if ((priv_hnd->fd1 > 0) &&
+        (nPlaneCnt >= 2)) {
+        ionHandle1 = dup(priv_hnd->fd1);
+        if (ionHandle1 < 0) {
+            Exynos_OSAL_Log(EXYNOS_LOG_ERROR, "[%s] Failed to dup(fd:%d)", __FUNCTION__, priv_hnd->fd1);
+            ionHandle1 = -1;
+        }
+    }
+
+    if ((priv_hnd->fd2 > 0) &&
+        (nPlaneCnt == 3)) {
+        ionHandle2 = dup(priv_hnd->fd2);
+        if (ionHandle2 < 0) {
+            Exynos_OSAL_Log(EXYNOS_LOG_ERROR, "[%s] Failed to dup(fd:%d)", __FUNCTION__, priv_hnd->fd2);
+            ionHandle2 = -1;
+        }
+    }
+#endif
 
     for (i = 0; i < MAX_BUFFER_REF; i++) {
         if (phREF->SharedBuffer[i].bufferFd == 0) {
             phREF->SharedBuffer[i].bufferHandle = (void *)bufferHandle;  /* mark that component owns it */
 
+#ifndef GRALLOC_VERSION0
             phREF->SharedBuffer[i].bufferFd    = (unsigned long long)(graphicBuffer.fd > 0)? graphicBuffer.fd:0;
             phREF->SharedBuffer[i].bufferFd1   = (unsigned long long)(graphicBuffer.fd1 > 0)? graphicBuffer.fd1:0;
             phREF->SharedBuffer[i].bufferFd2   = (unsigned long long)(graphicBuffer.fd2 > 0)? graphicBuffer.fd2:0;
+#else
+            phREF->SharedBuffer[i].bufferFd    = (unsigned long long)(priv_hnd->fd > 0)? priv_hnd->fd:0;
+            phREF->SharedBuffer[i].bufferFd1   = (unsigned long long)(priv_hnd->fd1 > 0)? priv_hnd->fd1:0;
+            phREF->SharedBuffer[i].bufferFd2   = (unsigned long long)(priv_hnd->fd2 > 0)? priv_hnd->fd2:0;
+#endif
 
             phREF->SharedBuffer[i].ionHandle   = ionHandle;
             phREF->SharedBuffer[i].ionHandle1  = ionHandle1;
@@ -1515,6 +1778,7 @@ OMX_ERRORTYPE Exynos_OSAL_RefCount_Increase(
                             phREF->SharedBuffer[i].bufferHandle, phREF->SharedBuffer[i].bufferFd,
                             phREF->SharedBuffer[i].ionHandle, phREF->SharedBuffer[i].cnt);
 #else
+#ifndef GRALLOC_VERSION0
     if ((graphicBuffer.fd > 0) &&
         (nPlaneCnt >= 1)) {
         if (exynos_ion_import_handle(getIonFd(), graphicBuffer.fd, &ionHandle) < 0) {
@@ -1538,9 +1802,37 @@ OMX_ERRORTYPE Exynos_OSAL_RefCount_Increase(
             ionHandle2 = -1;
         }
     }
+#else
+    if ((priv_hnd->fd > 0) &&
+        (nPlaneCnt >= 1)) {
+        if (exynos_ion_import_handle(getIonFd(module), priv_hnd->fd, &ionHandle) < 0) {
+            Exynos_OSAL_Log(EXYNOS_LOG_ERROR, "[%s] Failed to exynos_ion_import_handle(client:%d, fd:%d)", __FUNCTION__, getIonFd(module), priv_hnd->fd);
+            ionHandle = -1;
+        }
+    }
 
+    if ((priv_hnd->fd1 > 0) &&
+        (nPlaneCnt >= 2)) {
+        if (exynos_ion_import_handle(getIonFd(module), priv_hnd->fd1, &ionHandle1) < 0) {
+            Exynos_OSAL_Log(EXYNOS_LOG_ERROR, "[%s] Failed to exynos_ion_import_handle(client:%d, fd1:%d)", __FUNCTION__, getIonFd(module), priv_hnd->fd1);
+            ionHandle1 = -1;
+        }
+    }
+
+    if ((priv_hnd->fd2 > 0) &&
+        (nPlaneCnt == 3)) {
+        if (exynos_ion_import_handle(getIonFd(module), priv_hnd->fd2, &ionHandle2) < 0) {
+            Exynos_OSAL_Log(EXYNOS_LOG_ERROR, "[%s] Failed to exynos_ion_import_handle(client:%d, fd2:%d)", __FUNCTION__, getIonFd(module), priv_hnd->fd2);
+            ionHandle2 = -1;
+        }
+    }
+#endif
     for (i = 0; i < MAX_BUFFER_REF; i++) {
+#ifndef GRALLOC_VERSION0
         if (phREF->SharedBuffer[i].bufferFd == (unsigned long long)graphicBuffer.fd) {
+#else
+        if (phREF->SharedBuffer[i].bufferFd == (unsigned long long)priv_hnd->fd) {
+#endif
             phREF->SharedBuffer[i].cnt++;
             break;
         }
@@ -1551,9 +1843,15 @@ OMX_ERRORTYPE Exynos_OSAL_RefCount_Increase(
             if (phREF->SharedBuffer[i].bufferFd == 0) {
                 phREF->SharedBuffer[i].bufferHandle = (void *)bufferHandle;
 
+#ifndef GRALLOC_VERSION0
                 phREF->SharedBuffer[i].bufferFd    = (unsigned long long)(graphicBuffer.fd > 0)? graphicBuffer.fd:0;
                 phREF->SharedBuffer[i].bufferFd1   = (unsigned long long)(graphicBuffer.fd1 > 0)? graphicBuffer.fd1:0;
                 phREF->SharedBuffer[i].bufferFd2   = (unsigned long long)(graphicBuffer.fd2 > 0)? graphicBuffer.fd2:0;
+#else
+                phREF->SharedBuffer[i].bufferFd    = (unsigned long long)(priv_hnd->fd > 0)? priv_hnd->fd:0;
+                phREF->SharedBuffer[i].bufferFd1   = (unsigned long long)(priv_hnd->fd1 > 0)? priv_hnd->fd1:0;
+                phREF->SharedBuffer[i].bufferFd2   = (unsigned long long)(priv_hnd->fd2 > 0)? priv_hnd->fd2:0;
+#endif
 
                 phREF->SharedBuffer[i].ionHandle   = ionHandle;
                 phREF->SharedBuffer[i].ionHandle1  = ionHandle1;
@@ -1593,7 +1891,9 @@ OMX_ERRORTYPE Exynos_OSAL_RefCount_Decrease(
     OMX_COLOR_FORMATTYPE     eColorFormat   = OMX_COLOR_FormatUnused;
 
     buffer_handle_t      bufferHandle   = NULL;
-
+#ifdef GRALLOC_VERSION0
+    GRALLOC_MODULE      *module         = NULL;
+#endif
     int i, j;
 
     FunctionIn();
@@ -1621,6 +1921,10 @@ OMX_ERRORTYPE Exynos_OSAL_RefCount_Decrease(
 
         bufferHandle = (buffer_handle_t)bufferInfo.addr[0];
     }
+
+#ifdef GRALLOC_VERSION0
+    module = (GRALLOC_MODULE *)phREF->pGrallocModule;
+#endif
 
     Exynos_OSAL_MutexLock(phREF->hMutex);
 
@@ -1679,6 +1983,7 @@ OMX_ERRORTYPE Exynos_OSAL_RefCount_Decrease(
 
         for (j = 0; j < MAX_BUFFER_REF; j++) {
             if (phREF->SharedBuffer[j].bufferFd == (unsigned long long)dpbFD[i].fd) {
+#ifndef GRALLOC_VERSION0
                 if (phREF->SharedBuffer[j].ionHandle != -1)
                     exynos_ion_free_handle(getIonFd(), phREF->SharedBuffer[j].ionHandle);
 
@@ -1687,7 +1992,16 @@ OMX_ERRORTYPE Exynos_OSAL_RefCount_Decrease(
 
                 if (phREF->SharedBuffer[j].ionHandle2 != -1)
                     exynos_ion_free_handle(getIonFd(), phREF->SharedBuffer[j].ionHandle2);
+#else
+                if (phREF->SharedBuffer[j].ionHandle != -1)
+                    exynos_ion_free_handle(getIonFd(module), phREF->SharedBuffer[j].ionHandle);
 
+                if (phREF->SharedBuffer[j].ionHandle1 != -1)
+                    exynos_ion_free_handle(getIonFd(module), phREF->SharedBuffer[j].ionHandle1);
+
+                if (phREF->SharedBuffer[j].ionHandle2 != -1)
+                    exynos_ion_free_handle(getIonFd(module), phREF->SharedBuffer[j].ionHandle2);
+#endif
                 phREF->SharedBuffer[j].cnt--;
 
                 if (phREF->SharedBuffer[j].cnt == 0) {
@@ -2209,6 +2523,7 @@ OMX_ERRORTYPE Exynos_OSAL_SetParameter(
         }
     }
         break;
+#ifndef GRALLOC_VERSION0
     case OMX_IndexParamAndroidNatvieBufferConsumerUsage:
     {
         OMX_PARAM_U32TYPE *pConsumerUsageBits = (OMX_PARAM_U32TYPE *)pComponentParameterStructure;
@@ -2236,7 +2551,7 @@ OMX_ERRORTYPE Exynos_OSAL_SetParameter(
         goto EXIT;
     }
         break;
-
+#endif
     default:
     {
         Exynos_OSAL_Log(EXYNOS_LOG_ERROR, "[%p][%s] unsupported index (%d)",
@@ -2386,6 +2701,7 @@ OMX_ERRORTYPE Exynos_OSAL_GetConfig(
             Exynos_OSAL_Log(EXYNOS_LOG_ESSENTIAL, "[%p][%s] Guidance for DataSpace: datasapce(0x%x), ret(0x%x)", pExynosComponent, __FUNCTION__,
                                                     pParams->nDataSpace, ret);
 
+#ifndef GRALLOC_VERSION0
             if ((pExynosComponent->codecType == HW_VIDEO_DEC_CODEC) ||
                 (pExynosComponent->codecType == HW_VIDEO_DEC_SECURE_CODEC)) {
                 if ((nPortIndex != OUTPUT_PORT_INDEX) ||
@@ -2396,6 +2712,7 @@ OMX_ERRORTYPE Exynos_OSAL_GetConfig(
                 /* update dataspace only frameworks requests dataspace */
                 pExynosComponent->pExynosPort[OUTPUT_PORT_INDEX].ColorAspects.nDataSpace = pParams->nDataSpace;
             }
+#endif
             goto EXIT;
         }
 

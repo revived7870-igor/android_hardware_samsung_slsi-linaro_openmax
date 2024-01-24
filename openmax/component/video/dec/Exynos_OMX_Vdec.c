@@ -1106,8 +1106,10 @@ OMX_BOOL Exynos_Postprocess_OutputData(OMX_COMPONENTTYPE *pOMXComponent, EXYNOS_
             goto EXIT;
         }
 
+#ifndef GRALLOC_VERSION0
         if (exynosOutputPort->eMetaDataType == METADATA_TYPE_GRAPHIC)
             Exynos_OSAL_UpdateDataspaceToGraphicMeta(outputUseBuffer->bufferHeader->pBuffer, exynosOutputPort->ColorAspects.nDataSpace);
+#endif
 
         if (exynosOutputPort->bufferProcessType & (BUFFER_COPY | BUFFER_COPY_FORCE)) {
             if (exynosOutputPort->eMetaDataType & METADATA_TYPE_DATA)

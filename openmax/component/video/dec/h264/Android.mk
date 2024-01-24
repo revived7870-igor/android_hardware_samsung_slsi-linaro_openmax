@@ -51,12 +51,19 @@ LOCAL_SHARED_LIBRARIES := \
     libhardware \
     libhidlbase \
     libui \
-    libexynosgraphicbuffer \
     libstagefright_foundation \
     libexynosv4l2 \
     libion_exynos \
     libcsc \
     libExynosOMX_Resourcemanager
+
+ifneq ($(BOARD_USES_EXYNOS_GRALLOC_VERSION), 0)
+LOCAL_SHARED_LIBRARIES += \
+    libexynosgraphicbuffer
+else
+LOCAL_SHARED_LIBRARIES += \
+    android.hardware.graphics.mapper@2.0
+endif
 
 ifeq ($(BOARD_OMX_USES_EPIC), true)
 LOCAL_SHARED_LIBRARIES += \

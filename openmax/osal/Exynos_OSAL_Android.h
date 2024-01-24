@@ -70,7 +70,9 @@ void Exynos_OSAL_Performance(OMX_HANDLETYPE handle, int value, int fps);
 void Exynos_OSAL_ReleasePerformanceHandle(OMX_HANDLETYPE handle);
 OMX_ERRORTYPE Exynos_OSAL_UpdateDataSpaceFromAspects(EXYNOS_OMX_VIDEO_COLORASPECTS *pFWCA);
 void Exynos_OSAL_UpdateDataSpaceFromBitstream(EXYNOS_OMX_BASECOMPONENT *pExynosComponent);
+#ifndef GRALLOC_VERSION0
 void Exynos_OSAL_UpdateDataspaceToGraphicMeta(OMX_PTR pBuf, int nDataSpace);
+#endif
 
 #ifdef __cplusplus
 }

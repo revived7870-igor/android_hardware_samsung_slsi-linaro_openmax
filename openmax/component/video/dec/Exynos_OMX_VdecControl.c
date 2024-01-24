@@ -1884,7 +1884,9 @@ OMX_ERRORTYPE Exynos_OMX_VideoDecodeSetParameter(
     case OMX_IndexParamEnableAndroidBuffers:
     case OMX_IndexParamStoreMetaDataBuffer:
     case OMX_IndexParamAllocateNativeHandle:
+#ifndef GRALLOC_VERSION0
     case OMX_IndexParamAndroidNatvieBufferConsumerUsage:
+#endif
     {
         ret = Exynos_OSAL_SetParameter(hComponent, nIndex, ComponentParameterStructure);
     }
@@ -2493,11 +2495,14 @@ OMX_ERRORTYPE Exynos_OMX_VideoDecodeGetExtensionIndex(
         ret = OMX_ErrorNone;
         goto EXIT;
     }
+
+#ifndef GRALLOC_VERSION0
     if (Exynos_OSAL_Strcmp(cParameterName, EXYNOS_INDEX_PARAM_SET_ANB_CONSUMER_USAGE) == 0) {
         *pIndexType = (OMX_INDEXTYPE) OMX_IndexParamAndroidNatvieBufferConsumerUsage;
         ret = OMX_ErrorNone;
         goto EXIT;
     }
+#endif
 #endif
 
     if (IS_CUSTOM_COMPONENT(pExynosComponent->componentName) == OMX_TRUE) {
